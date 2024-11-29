@@ -1,6 +1,17 @@
 import cv2
 import threading
 import time
+import numpy as np
+from src.images import Image
+from src.matching import (
+    MultiImageMatches,
+    PairMatch,
+    build_homographies,
+    find_connected_components,
+)
+
+from src.rendering import multi_band_blending, set_gain_compensations, simple_blending
+
 
 # Replace with the actual IP address and port shown in DroidCam app on your Android device
 android_ip = ''
@@ -45,9 +56,51 @@ def stitch_frames():
     while not stop_thread:
         with lock:
             if frame1 is not None and frame2 is not None:
+                image1 = Image(frame1)
+                image2 = Image(frame2)
+
+                image1.compute_features()
+                image2.compute_features()
+
+                images = [image1, image2]
+                
+                matcher = MultiImageMatches(images)
+                pair_matches: list[PairMatch] = matcher.get_pair_matches()
+                pair_matches.sort(key=lambda pair_match: len(pair_match.matches), reverse=True)
+                connected_components = find_connected_components(pair_matches)
+
+                build_homographies(connected_components, pair_matches)
+
+                time.sleep(0.1)
+
+                for connected_component in connected_components:
+                    component_matches = [
+                        pair_match
+                        for pair_match in pair_matches
+                        if pair_match.image_a in connected_component
+                    ]
+
+                    set_gain_compensations(
+                        connected_component,
+                        component_matches,
+                        sigma_n=10,
+                        sigma_g=0.1,
+                    )
+
+                time.sleep(0.1)
+
+                for image in images:
+                    image.image = (image.image * image.gain[np.newaxis, np.newaxis, :]).astype(np.uint8)
+
+                results = []
+                
+                results = [
+                    simple_blending(connected_component)
+                    for connected_component in connected_components
+                ]
+
                 # Stitch the two frames side by side
                 stitched_frame = cv2.hconcat([frame1, frame2])
-                
                 # Display the stitched video
                 cv2.imshow('Stitched Video', stitched_frame)
                 
